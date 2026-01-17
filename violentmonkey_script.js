@@ -1,16 +1,22 @@
 // ==UserScript==
 // @name         LegalDoc 判例クロールツール（ダウンロード制御強化版）
 // @namespace    http://tampermonkey.net/
-// @version      1.2
+// @version      1.4
 // @description  自動ダウンロードチェックボックスと手動ダウンロードボタンを追加し、カスタム総量に対応
 // @author       Gemini
-// @match        https://legaldoc.jp/hanrei/hanrei-search?cid=1*
+// @match        https://legaldoc.jp/hanrei/hanrei-search*
 // @grant        none
 // @require      https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js
 // ==/UserScript==
 
-(function() {
+(function () {
     'use strict';
+
+    // get cid from url
+    function getCidFromUrl() {
+        const params = new URLSearchParams(window.location.search);
+        return params.get('cid') || "1"; // 默认 1
+    }
 
     // --- get total ---
     function getPageTotal() {
@@ -18,26 +24,47 @@
         if (totalElem) {
             // 使用正则匹配数字，例如从 "条件に一致する判例：67110件" 中提取 67110
             const match = totalElem.innerText.match(/\d+/);
-            return match ? parseInt(match[0]) : 67110;
+            if (match) {
+                return parseInt(match[0]);
+            }
         }
+
+        document.getElementById("j_idt71-j_idt73-j_idt79").click()
         return 0; // 找不到标签时的默认回退值
     }
 
     console.log(`get total: ${getPageTotal()}`);
 
-    const CONFIG = {
+    let CONFIG = {
+        start: 0,
         step: 20,
         defaultTotal: getPageTotal(),
-        targetUrl: "https://legaldoc.jp/hanrei/hanrei-search?cid=1",
+        targetUrl: "https://legaldoc.jp/hanrei/hanrei-search?cid="+getCidFromUrl(),
         maxRetries: 3,
-        delay: 1000,
+        delay: 100,
         retryDelay: 3000
     };
+    console.log(CONFIG);
 
     let results = [];
     let failedStarts = [];
     let isRunning = false;
     let dynamicTotal = CONFIG.defaultTotal;
+    let mode = "normal";
+
+    if (localStorage.getItem("_config") !== null)
+        CONFIG = JSON.parse(localStorage.getItem("_config"))
+        CONFIG.defaultTotal = getPageTotal()
+        CONFIG.targetUrl = "https://legaldoc.jp/hanrei/hanrei-search?cid="+getCidFromUrl();
+    if (localStorage.getItem("crawl_resume_start") !== null)
+        CONFIG.start = parseInt(localStorage.getItem("crawl_resume_start"));
+    if (localStorage.getItem("results") !== null)
+        results = JSON.parse(localStorage.getItem("results"));
+    if (localStorage.getItem("failed_starts") !== null)
+        failedStarts = JSON.parse(localStorage.getItem("failed_starts"));
+    if (localStorage.getItem("continuous") !== null)
+        mode = localStorage.getItem("continuous");
+
 
     // --- UIパネルを作成 ---
     const panel = document.createElement('div');
@@ -83,31 +110,36 @@
         });
 
         const response = await axios.post(CONFIG.targetUrl, bodyData.toString(), {
-            headers: { 
-                "content-type": "application/x-www-form-urlencoded; charset=UTF-8", 
-                "faces-request": "partial/ajax" 
+            headers: {
+                "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "faces-request": "partial/ajax"
             },
-            timeout: 15000 
+            timeout: 15000
         });
 
         return response.data;
     }
 
     async function startCrawl() {
-        if(isRunning) return;
-
-        const userInput = prompt("クロールするデータの総数を入力してください (totalData):", dynamicTotal);
-        if (userInput === null) return;
-        
-        const parsedInput = parseInt(userInput);
-        if (isNaN(parsedInput) || parsedInput <= 0) {
-            alert("有効な数字を入力してください！");
+        if (isRunning) {
+            console.log("クロールが実行中です。");
             return;
         }
-        
-        dynamicTotal = parsedInput;
+
+        if (mode === "continue") {
+            const userInput = prompt("クロールするデータの総数を入力してください (totalData):", dynamicTotal);
+            if (userInput === null) return;
+            const parsedInput = parseInt(userInput);
+            if (isNaN(parsedInput) || parsedInput <= 0) {
+                alert("有効な数字を入力してください！");
+                return;
+            }
+            dynamicTotal = parsedInput;
+        }
+
         document.getElementById('p-total').innerText = dynamicTotal;
-        
+
+
         // ステータスをリセット
         results = [];
         failedStarts = [];
@@ -117,7 +149,7 @@
         document.getElementById('start-btn').innerText = "クロール中...";
 
         let currentViewState = document.getElementById("j_id1-jakarta.faces.ViewState-0")?.value;
-        
+
         if (!currentViewState) {
             updateStatus("❌ エラー: ViewStateトークンを取得できませんでした");
             resetUI();
@@ -125,20 +157,35 @@
         }
 
         // 1. メインループ
-        for (let start = 0; start < dynamicTotal; start += CONFIG.step) {
+        for (let start = CONFIG.start; start < dynamicTotal; start += CONFIG.step) {
             try {
                 updateStatus(`📡 クロール中: ${start}`);
                 const xml = await fetchPage(start, currentViewState);
-                
+
                 const parser = new DOMParser();
                 const xmlDoc = parser.parseFromString(xml, "text/xml");
                 const vsNode = xmlDoc.querySelector('update[id*="jakarta.faces.ViewState"]');
                 if (vsNode) currentViewState = vsNode.textContent;
 
+                const redirectNode = xmlDoc.querySelector('redirect');
+                if (redirectNode) {
+                    const url = redirectNode.getAttribute('url');
+                    updateStatus(`⚠️ リダイレクト: ${url}`);
+
+                    // 自动保存
+                    localStorage.setItem('crawl_resume_start', start);
+                    localStorage.setItem('failed_starts', JSON.stringify(failedStarts));
+                    localStorage.setItem('results', JSON.stringify(results));
+                    localStorage.setItem("continuous", "continue");
+                    localStorage.setItem("_config", JSON.stringify(CONFIG))
+                    setTimeout(() => location.reload(), 2000);
+                    return; // 终止loop
+                }
+
                 results.push({ start, xml });
                 updateCounter('p-success', results.length);
                 updateCounter('p-current', Math.min(start + CONFIG.step, dynamicTotal));
-                
+
                 await new Promise(r => setTimeout(r, CONFIG.delay));
             } catch (e) {
                 failedStarts.push({ start, retryCount: 0 });
@@ -158,7 +205,7 @@
                     updateStatus(`♻️ リトライ: ${task.start} (${task.retryCount + 1})`);
                     const xml = await fetchPage(task.start, currentViewState);
                     results.push({ start: task.start, xml });
-                    
+
                     updateCounter('p-success', results.length);
                     updateCounter('p-fail', failedStarts.length);
                     await new Promise(r => setTimeout(r, CONFIG.retryDelay));
@@ -171,7 +218,7 @@
         }
 
         updateStatus("✅ クロールタスク終了");
-        
+
         // 3. 自動ダウンロード判定
         if (document.getElementById('auto-download-cb').checked) {
             exportXml();
@@ -186,7 +233,7 @@
         }
 
         updateStatus("💾 XMLファイル構築中...");
-        
+
         // クローンして並べ替え、元の結果配列には影響を与えない
         const sortedResults = [...results].sort((a, b) => a.start - b.start);
 
@@ -204,7 +251,7 @@
         link.href = URL.createObjectURL(blob);
         link.download = `legal_export_n${results.length}_${Date.now()}.xml`;
         link.click();
-        
+
         updateStatus("💾 ファイルがエクスポートされました");
     }
 
@@ -223,10 +270,26 @@
         btn.style.opacity = "1";
         btn.innerText = "クロール開始";
         isRunning = false;
+        localStorage.setItem("continue", "normal");
     }
 
     // イベントをバインド
     document.getElementById('start-btn').addEventListener('click', startCrawl);
     document.getElementById('download-btn').addEventListener('click', exportXml);
+
+    if (isRunning) {
+        // continue crawl
+        console.log("continue crawl");
+        isRunning = false;
+        localStorage.setItem("continue", "normal");
+        mode = "continue";
+        startCrawl();
+    }
+    else {
+        console.log("crawl script successfully inited")
+        updateStatus("✅ 準備完了");
+    }
+
+
 
 })();
