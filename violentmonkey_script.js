@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LegalDoc 判例クロールツール（ダウンロード制御強化版）
 // @namespace    http://tampermonkey.net/
-// @version      1.4
+// @version      1.5
 // @description  自動ダウンロードチェックボックスと手動ダウンロードボタンを追加し、カスタム総量に対応
 // @author       Gemini
 // @match        https://legaldoc.jp/hanrei/hanrei-search*
@@ -39,7 +39,7 @@
         start: 0,
         step: 20,
         defaultTotal: getPageTotal(),
-        targetUrl: "https://legaldoc.jp/hanrei/hanrei-search?cid="+getCidFromUrl(),
+        targetUrl: "https://legaldoc.jp/hanrei/hanrei-search?cid=" + getCidFromUrl(),
         maxRetries: 3,
         delay: 100,
         retryDelay: 3000
@@ -54,8 +54,8 @@
 
     if (localStorage.getItem("_config") !== null)
         CONFIG = JSON.parse(localStorage.getItem("_config"))
-        CONFIG.defaultTotal = getPageTotal()
-        CONFIG.targetUrl = "https://legaldoc.jp/hanrei/hanrei-search?cid="+getCidFromUrl();
+    CONFIG.defaultTotal = getPageTotal()
+    CONFIG.targetUrl = "https://legaldoc.jp/hanrei/hanrei-search?cid=" + getCidFromUrl();
     if (localStorage.getItem("crawl_resume_start") !== null)
         CONFIG.start = parseInt(localStorage.getItem("crawl_resume_start"));
     if (localStorage.getItem("results") !== null)
@@ -105,6 +105,8 @@
             "j_idt209-courtsDataTable_pagination": "true",
             "j_idt209-courtsDataTable_first": start,
             "j_idt209-courtsDataTable_rows": CONFIG.step,
+            "j_idt209-courtsDataTable_skipChildren": "true",
+            "j_idt209-courtsDataTable_encodeFeature": "true",
             "j_idt209": "j_idt209",
             "jakarta.faces.ViewState": viewState
         });
@@ -164,6 +166,7 @@
 
                 const parser = new DOMParser();
                 const xmlDoc = parser.parseFromString(xml, "text/xml");
+                console.log(xmlDoc);
                 const vsNode = xmlDoc.querySelector('update[id*="jakarta.faces.ViewState"]');
                 if (vsNode) currentViewState = vsNode.textContent;
 
